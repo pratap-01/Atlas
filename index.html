@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atlas Money</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1 class="brand">Atlas <span>Money</span></h1>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-view="dashboard" class="active">Dashboard</button>
+      <button role="tab" data-view="transactions">Transactions</button>
+      <button role="tab" data-view="reports">Reports</button>
+      <button role="tab" data-view="settings">Settings</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Dashboard -->
+    <section id="view-dashboard" class="view active">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Add transaction</h2>
+          <form id="tx-form" autocomplete="off">
+            <input type="hidden" name="id">
+            <div class="type-toggle" role="radiogroup" aria-label="Type">
+              <label><input type="radio" name="type" value="expense" checked><span>Expense</span></label>
+              <label><input type="radio" name="type" value="income"><span>Income</span></label>
+            </div>
+            <div class="form-row">
+              <label>Amount<input type="number" name="amount" step="0.01" min="0.01" required inputmode="decimal" placeholder="0.00"></label>
+              <label>Date<input type="date" name="date" required></label>
+            </div>
+            <div class="form-row">
+              <label>Category<select name="category" required></select></label>
+              <label>Payment method
+                <select name="method">
+                  <option>Cash</option><option>Debit card</option><option>Credit card</option>
+                  <option>UPI / Wallet</option><option>Bank transfer</option><option>Other</option>
+                </select>
+              </label>
+            </div>
+            <label>Description<input type="text" name="description" maxlength="120" placeholder="e.g. Groceries at the market"></label>
+            <label>Notes<input type="text" name="notes" maxlength="240" placeholder="Optional"></label>
+            <div class="form-actions">
+              <button type="submit" class="btn primary" id="tx-submit">Add transaction</button>
+              <button type="button" class="btn" id="tx-cancel" hidden>Cancel edit</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="stack">
+          <div class="card">
+            <h2 id="dash-month-title">This month</h2>
+            <div class="stats" id="dash-stats"></div>
+          </div>
+          <div class="card">
+            <h2>Top spending categories</h2>
+            <div id="dash-cats" class="chart"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Recent transactions</h2>
+          <button class="btn link" data-goto="transactions">View all →</button>
+        </div>
+        <div id="dash-recent"></div>
+      </div>
+    </section>
+
+    <!-- Transactions -->
+    <section id="view-transactions" class="view">
+      <div class="card">
+        <div class="filters">
+          <label>Search<input type="search" id="f-search" placeholder="Description or notes"></label>
+          <label>From<input type="date" id="f-from"></label>
+          <label>To<input type="date" id="f-to"></label>
+          <label>Type
+            <select id="f-type"><option value="">All</option><option value="expense">Expense</option><option value="income">Income</option></select>
+          </label>
+          <label>Category<select id="f-category"><option value="">All</option></select></label>
+          <button class="btn" id="f-clear">Clear</button>
+        </div>
+        <div class="summary-line" id="tx-summary"></div>
+        <div id="tx-list"></div>
+      </div>
+    </section>
+
+    <!-- Reports -->
+    <section id="view-reports" class="view">
+      <div class="card">
+        <div class="filters">
+          <label>Period
+            <select id="r-period">
+              <option value="this-month">This month</option>
+              <option value="last-month">Last month</option>
+              <option value="last-3">Last 3 months</option>
+              <option value="this-year">This year</option>
+              <option value="last-12">Last 12 months</option>
+              <option value="all">All time</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </label>
+          <label class="custom-range" hidden>From<input type="date" id="r-from"></label>
+          <label class="custom-range" hidden>To<input type="date" id="r-to"></label>
+        </div>
+        <p class="muted" id="r-range-label"></p>
+        <div class="stats" id="r-stats"></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h2>Spending by category</h2>
+          <div id="r-cat-chart" class="chart"></div>
+        </div>
+        <div class="card">
+          <h2>Category breakdown</h2>
+          <div id="r-cat-table"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Monthly income vs. expenses</h2>
+        <div id="r-monthly" class="chart"></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h2>Daily spending</h2>
+          <div id="r-daily" class="chart"></div>
+        </div>
+        <div class="card">
+          <h2>Spending by payment method</h2>
+          <div id="r-method" class="chart"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Largest expenses</h2>
+        <div id="r-largest"></div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="view">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Categories</h2>
+          <div class="cat-manager">
+            <div>
+              <h3>Expense</h3>
+              <ul id="cats-expense" class="chips"></ul>
+              <form class="inline-form" data-cat-type="expense">
+                <input type="text" placeholder="New expense category" maxlength="40" required>
+                <button class="btn">Add</button>
+              </form>
+            </div>
+            <div>
+              <h3>Income</h3>
+              <ul id="cats-income" class="chips"></ul>
+              <form class="inline-form" data-cat-type="income">
+                <input type="text" placeholder="New income category" maxlength="40" required>
+                <button class="btn">Add</button>
+              </form>
+            </div>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="card">
+            <h2>Preferences</h2>
+            <label>Currency
+              <select id="s-currency">
+                <option value="USD">USD – US Dollar</option>
+                <option value="EUR">EUR – Euro</option>
+                <option value="GBP">GBP – British Pound</option>
+                <option value="INR">INR – Indian Rupee</option>
+                <option value="JPY">JPY – Japanese Yen</option>
+                <option value="CAD">CAD – Canadian Dollar</option>
+                <option value="AUD">AUD – Australian Dollar</option>
+                <option value="SGD">SGD – Singapore Dollar</option>
+                <option value="AED">AED – UAE Dirham</option>
+              </select>
+            </label>
+            <label>Monthly budget (optional)
+              <input type="number" id="s-budget" min="0" step="1" placeholder="e.g. 2000">
+            </label>
+          </div>
+          <div class="card">
+            <h2>Data</h2>
+            <p class="muted">Your data is stored only in this browser. Export a backup regularly.</p>
+            <div class="btn-row">
+              <button class="btn" id="export-csv">Export CSV</button>
+              <button class="btn" id="export-json">Export backup (JSON)</button>
+              <label class="btn file-btn">Import backup / CSV<input type="file" id="import-file" accept=".json,.csv" hidden></label>
+            </div>
+            <div class="btn-row">
+              <button class="btn" id="load-sample">Load sample data</button>
+              <button class="btn danger" id="clear-all">Delete all data</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="js/storage.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
