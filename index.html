@@ -12,6 +12,7 @@
     <nav class="tabs" role="tablist">
       <button role="tab" data-view="dashboard" class="active">Dashboard</button>
       <button role="tab" data-view="transactions">Transactions</button>
+      <button role="tab" data-view="accounts">Accounts</button>
       <button role="tab" data-view="reports">Reports</button>
       <button role="tab" data-view="settings">Settings</button>
     </nav>
@@ -28,21 +29,26 @@
             <div class="type-toggle" role="radiogroup" aria-label="Type">
               <label><input type="radio" name="type" value="expense" checked><span>Expense</span></label>
               <label><input type="radio" name="type" value="income"><span>Income</span></label>
+              <label><input type="radio" name="type" value="transfer"><span>Transfer</span></label>
             </div>
             <div class="form-row">
               <label>Amount<input type="number" name="amount" step="0.01" min="0.01" required inputmode="decimal" placeholder="0.00"></label>
               <label>Date<input type="date" name="date" required></label>
             </div>
             <div class="form-row">
-              <label>Category<select name="category" required></select></label>
-              <label>Payment method
+              <label><span id="account-label">Account</span><select name="accountId"></select></label>
+              <label class="transfer-only" hidden>To account<select name="toAccountId"></select></label>
+              <label class="not-transfer">Category<select name="category" required></select></label>
+            </div>
+            <div class="form-row">
+              <label class="not-transfer">Payment method
                 <select name="method">
                   <option>Cash</option><option>Debit card</option><option>Credit card</option>
-                  <option>UPI / Wallet</option><option>Bank transfer</option><option>Other</option>
+                  <option>UPI / Wallet</option><option>Bank transfer</option><option>Cheque</option><option>Other</option>
                 </select>
               </label>
+              <label>Description<input type="text" name="description" maxlength="120" placeholder="e.g. Groceries at the market"></label>
             </div>
-            <label>Description<input type="text" name="description" maxlength="120" placeholder="e.g. Groceries at the market"></label>
             <label>Notes<input type="text" name="notes" maxlength="240" placeholder="Optional"></label>
             <div class="form-actions">
               <button type="submit" class="btn primary" id="tx-submit">Add transaction</button>
@@ -55,6 +61,13 @@
           <div class="card">
             <h2 id="dash-month-title">This month</h2>
             <div class="stats" id="dash-stats"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>Account balances</h2>
+              <button class="btn link" data-goto="accounts">Manage →</button>
+            </div>
+            <div id="dash-accounts"></div>
           </div>
           <div class="card">
             <h2>Top spending categories</h2>
@@ -80,13 +93,90 @@
           <label>From<input type="date" id="f-from"></label>
           <label>To<input type="date" id="f-to"></label>
           <label>Type
-            <select id="f-type"><option value="">All</option><option value="expense">Expense</option><option value="income">Income</option></select>
+            <select id="f-type"><option value="">All</option><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option></select>
           </label>
+          <label>Account<select id="f-account"><option value="">All</option></select></label>
           <label>Category<select id="f-category"><option value="">All</option></select></label>
           <button class="btn" id="f-clear">Clear</button>
         </div>
         <div class="summary-line" id="tx-summary"></div>
         <div id="tx-list"></div>
+      </div>
+    </section>
+
+    <!-- Accounts -->
+    <section id="view-accounts" class="view">
+      <div class="card">
+        <div class="card-head">
+          <h2>Your accounts</h2>
+          <button class="btn primary" id="acc-new">+ Add account</button>
+        </div>
+        <div class="stats" id="acc-totals"></div>
+        <div class="acc-grid" id="acc-list"></div>
+        <label class="inline-check"><input type="checkbox" id="acc-show-archived"> Show archived accounts</label>
+      </div>
+
+      <div class="card" id="acc-form-card" hidden>
+        <h2 id="acc-form-title">Add account</h2>
+        <form id="acc-form" autocomplete="off">
+          <input type="hidden" name="id">
+          <div class="form-row">
+            <label>Account name<input type="text" name="name" maxlength="60" required placeholder="e.g. HDFC Savings, Chase Checking"></label>
+            <label>Type
+              <select name="type"></select>
+            </label>
+          </div>
+          <div class="form-row">
+            <label>Bank / institution<input type="text" name="institution" maxlength="60" placeholder="Optional"></label>
+            <label>Account number (last 4)<input type="text" name="number" maxlength="8" placeholder="Optional"></label>
+          </div>
+          <label>Starting balance
+            <input type="number" name="openingBalance" step="0.01" placeholder="0.00">
+            <small class="muted">Balance before the first transaction you record here. Use a negative amount for money owed (e.g. a credit card).</small>
+          </label>
+          <label class="inline-check"><input type="checkbox" name="archived"> Archived (hidden from the transaction form)</label>
+          <div class="form-actions">
+            <button type="submit" class="btn primary">Save account</button>
+            <button type="button" class="btn" id="acc-cancel">Cancel</button>
+            <button type="button" class="btn danger" id="acc-delete" hidden>Delete account</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card" id="unassigned-card" hidden>
+        <h2>Unassigned transactions</h2>
+        <p class="muted" id="unassigned-text"></p>
+        <div class="inline-form">
+          <select id="unassigned-account"></select>
+          <button class="btn" id="unassigned-assign">Assign all</button>
+        </div>
+      </div>
+
+      <div class="card statement" id="statement">
+        <div class="card-head no-print">
+          <h2>Account statement</h2>
+          <div class="btn-row">
+            <button class="btn" id="st-csv">Export CSV</button>
+            <button class="btn" id="st-print">Print / PDF</button>
+          </div>
+        </div>
+        <div class="filters no-print">
+          <label>Account<select id="st-account"></select></label>
+          <label>Period
+            <select id="st-period">
+              <option value="this-month">This month</option>
+              <option value="last-month">Last month</option>
+              <option value="last-3">Last 3 months</option>
+              <option value="this-year">This year</option>
+              <option value="last-12">Last 12 months</option>
+              <option value="all">All time</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </label>
+          <label class="st-custom" hidden>From<input type="date" id="st-from"></label>
+          <label class="st-custom" hidden>To<input type="date" id="st-to"></label>
+        </div>
+        <div id="st-body"></div>
       </div>
     </section>
 
@@ -137,6 +227,11 @@
           <h2>Spending by payment method</h2>
           <div id="r-method" class="chart"></div>
         </div>
+      </div>
+
+      <div class="card">
+        <h2>Spending by account</h2>
+        <div id="r-account" class="chart"></div>
       </div>
 
       <div class="card">

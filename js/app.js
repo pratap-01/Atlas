@@ -40,6 +40,17 @@
     list.forEach(t => { const k = keyFn(t); m.set(k, (m.get(k) || []).concat(t)); });
     return m;
   }
+  const accountName = id => Store.accountById(id)?.name || 'No account';
+  // Signed effect of a transaction on one account's balance.
+  function effectOn(t, accId) {
+    if (t.type === 'transfer') return t.toAccountId === accId ? t.amount : t.accountId === accId ? -t.amount : 0;
+    if (t.accountId !== accId) return 0;
+    return t.type === 'income' ? t.amount : -t.amount;
+  }
+  const touches = (t, accId) => t.accountId === accId || t.toAccountId === accId;
+  function balanceOf(acc, upTo) {
+    return Store.transactions.reduce((b, t) => (!upTo || t.date <= upTo ? b + effectOn(t, acc.id) : b), acc.openingBalance);
+  }
   const byNewest = (a, b) => b.date.localeCompare(a.date) || (b._seq ?? 0) - (a._seq ?? 0);
 
   // ---------- Tabs ----------
@@ -69,45 +80,81 @@
   const formType = () => form.elements.type.value;
 
   function fillCategorySelect(select, type, selected) {
-    const cats = Store.categories[type];
+    const cats = Store.categories[type] || [];
     select.innerHTML = cats.map(c => `<option${c === selected ? ' selected' : ''}>${esc(c)}</option>`).join('');
     if (selected && !cats.includes(selected)) select.insertAdjacentHTML('beforeend', `<option selected>${esc(selected)}</option>`);
+  }
+
+  function fillAccountSelect(select, selected, { allowNone = true, exclude } = {}) {
+    const list = Store.accounts.filter(a => (!a.archived || a.id === selected) && a.id !== exclude);
+    select.innerHTML = (allowNone ? '<option value="">— No account —</option>' : '') +
+      list.map(a => `<option value="${a.id}"${a.id === selected ? ' selected' : ''}>${esc(a.name)}</option>`).join('');
+  }
+
+  // Show/hide fields for income/expense vs. transfer and refresh the dropdowns.
+  function syncFormType(accountId, toAccountId) {
+    const f = form.elements, transfer = formType() === 'transfer';
+    $$('.transfer-only', form).forEach(e => (e.hidden = !transfer));
+    $$('.not-transfer', form).forEach(e => (e.hidden = transfer));
+    f.category.required = !transfer;
+    $('#account-label').textContent = transfer ? 'From account' : 'Account';
+    const from = accountId ?? (f.accountId.value || Store.settings.lastAccountId || '');
+    fillAccountSelect(f.accountId, from, { allowNone: !transfer });
+    if (transfer) {
+      const fromId = f.accountId.value;
+      const to = toAccountId ?? f.toAccountId.value;
+      fillAccountSelect(f.toAccountId, to, { allowNone: false, exclude: fromId });
+    } else {
+      fillCategorySelect(f.category, formType(), f.category.value);
+    }
   }
 
   function resetForm() {
     form.reset();
     form.elements.id.value = '';
     form.elements.date.value = today();
-    fillCategorySelect(form.elements.category, formType());
+    form.elements.category.innerHTML = '';
+    syncFormType();
     $('#tx-submit').textContent = 'Add transaction';
     $('#tx-cancel').hidden = true;
   }
 
-  $$('input[name="type"]', form).forEach(r => r.addEventListener('change', () => fillCategorySelect(form.elements.category, formType())));
+  $$('input[name="type"]', form).forEach(r => r.addEventListener('change', () => {
+    form.elements.category.innerHTML = '';
+    syncFormType();
+  }));
+  form.elements.accountId.addEventListener('change', () => { if (formType() === 'transfer') syncFormType(); });
 
   form.addEventListener('submit', e => {
     e.preventDefault();
     const f = form.elements;
     const editing = !!f.id.value;
+    const transfer = formType() === 'transfer';
+    if (transfer && Store.accounts.filter(a => !a.archived).length < 2) {
+      return toast('Add at least two accounts (Accounts tab) to record a transfer.');
+    }
     const saved = Store.upsertTx({
       id: f.id.value || Store.uid(),
       type: formType(),
       amount: f.amount.value,
       date: f.date.value,
+      accountId: f.accountId.value || null,
+      toAccountId: transfer ? f.toAccountId.value : undefined,
       category: f.category.value,
-      method: f.method.value,
+      method: transfer ? '' : f.method.value,
       description: f.description.value,
       notes: f.notes.value,
     });
-    if (!saved) return toast('Please enter a valid amount and date.');
-    const keepDate = f.date.value, keepType = formType(), keepMethod = f.method.value;
+    if (!saved) return toast(transfer ? 'Choose two different accounts for the transfer.' : 'Please enter a valid amount and date.');
+    const keep = { date: f.date.value, type: formType(), method: f.method.value, account: f.accountId.value };
+    if (!transfer) Store.setSetting('lastAccountId', keep.account || null);
     resetForm();
     if (!editing) {
       // keep the context for quick consecutive entries
-      f.date.value = keepDate;
-      form.querySelector(`input[name="type"][value="${keepType}"]`).checked = true;
-      fillCategorySelect(f.category, keepType);
-      f.method.value = keepMethod;
+      f.date.value = keep.date;
+      form.querySelector(`input[name="type"][value="${keep.type}"]`).checked = true;
+      syncFormType(keep.account);
+      f.method.value = keep.method;
     }
     toast(editing ? 'Transaction updated' : 'Transaction added');
     render();
@@ -122,7 +169,9 @@
     const f = form.elements;
     f.id.value = t.id;
     form.querySelector(`input[name="type"][value="${t.type}"]`).checked = true;
-    fillCategorySelect(f.category, t.type, t.category);
+    f.category.innerHTML = '';
+    if (t.type !== 'transfer') fillCategorySelect(f.category, t.type, t.category);
+    syncFormType(t.accountId || '', t.toAccountId);
     f.amount.value = t.amount;
     f.date.value = t.date;
     f.method.value = t.method || 'Other';
@@ -136,7 +185,7 @@
 
   function deleteTx(id) {
     const t = Store.transactions.find(x => x.id === id);
-    if (!t || !confirm(`Delete "${t.description || t.category}" (${money(t.amount)})?`)) return;
+    if (!t || !confirm(`Delete "${t.description || (t.type === 'transfer' ? 'transfer' : t.category)}" (${money(t.amount)})?`)) return;
     Store.deleteTx(id);
     if (form.elements.id.value === id) resetForm();
     toast('Transaction deleted');
@@ -149,18 +198,25 @@
       container.innerHTML = `<div class="empty">No transactions yet. Add one using the form${Store.transactions.length ? ' or adjust your filters' : ''}.</div>`;
       return;
     }
-    const row = t => `
+    const row = t => {
+      const transfer = t.type === 'transfer';
+      const route = transfer ? `${accountName(t.accountId)} → ${accountName(t.toAccountId)}` : '';
+      const meta = transfer
+        ? `<span class="tag">Transfer</span>${esc(route)}`
+        : `<span class="tag">${esc(t.category)}</span>${[t.accountId ? accountName(t.accountId) : '', t.method].filter(Boolean).map(esc).join(' · ')}`;
+      return `
       <div class="tx">
         <div style="min-width:0">
-          <div class="desc">${esc(t.description || t.category)}</div>
-          <div class="meta"><span class="tag">${esc(t.category)}</span>${esc(t.method || '')}${t.notes ? ' · ' + esc(t.notes) : ''}</div>
+          <div class="desc">${esc(t.description || (transfer ? route : t.category))}</div>
+          <div class="meta">${meta}${t.notes ? ' · ' + esc(t.notes) : ''}</div>
         </div>
-        <div class="amt ${t.type}">${t.type === 'income' ? '+' : '−'}${money(t.amount)}</div>
+        <div class="amt ${t.type}">${transfer ? '⇄ ' : t.type === 'income' ? '+' : '−'}${money(t.amount)}</div>
         <div class="actions">
           <button data-edit="${t.id}" title="Edit" aria-label="Edit">Edit</button>
           <button data-del="${t.id}" title="Delete" aria-label="Delete">Delete</button>
         </div>
       </div>`;
+    };
     if (!grouped) { container.innerHTML = list.map(row).join(''); return; }
     const days = groupBy(list, t => t.date);
     container.innerHTML = [...days].map(([d, items]) => {
@@ -216,6 +272,7 @@
     const cats = categoryTotals(month.filter(t => t.type === 'expense'));
     Charts.hbars($('#dash-cats'), cats.slice(0, 5), v => money(v));
 
+    renderAccountSummary($('#dash-accounts'));
     renderTxList($('#dash-recent'), sortedTx(Store.transactions).slice(0, 8));
   }
 
@@ -226,7 +283,7 @@
   }
 
   // ---------- Transactions view ----------
-  const filters = { search: $('#f-search'), from: $('#f-from'), to: $('#f-to'), type: $('#f-type'), category: $('#f-category') };
+  const filters = { search: $('#f-search'), from: $('#f-from'), to: $('#f-to'), type: $('#f-type'), account: $('#f-account'), category: $('#f-category') };
   Object.values(filters).forEach(i => i.addEventListener('input', renderTransactions));
   $('#f-clear').addEventListener('click', () => { Object.values(filters).forEach(i => (i.value = '')); renderTransactions(); });
 
@@ -235,10 +292,16 @@
     const allCats = [...new Set([...Store.categories.expense, ...Store.categories.income, ...Store.transactions.map(t => t.category)])].sort();
     filters.category.innerHTML = '<option value="">All</option>' + allCats.map(c => `<option${c === sel ? ' selected' : ''}>${esc(c)}</option>`).join('');
 
+    const accSel = filters.account.value;
+    filters.account.innerHTML = '<option value="">All</option><option value="none">No account</option>' +
+      Store.accounts.map(a => `<option value="${a.id}">${esc(a.name)}${a.archived ? ' (archived)' : ''}</option>`).join('');
+    filters.account.value = [...filters.account.options].some(o => o.value === accSel) ? accSel : '';
+
     const q = filters.search.value.trim().toLowerCase();
     const list = sortedTx(Store.transactions).filter(t =>
       inRange(filters.from.value, filters.to.value)(t) &&
       (!filters.type.value || t.type === filters.type.value) &&
+      (!filters.account.value || (filters.account.value === 'none' ? !t.accountId : touches(t, filters.account.value))) &&
       (!filters.category.value || t.category === filters.category.value) &&
       (!q || `${t.description} ${t.notes} ${t.category}`.toLowerCase().includes(q)));
     const tt = totals(list);
@@ -261,7 +324,7 @@
   });
   [rFrom, rTo].forEach(i => i.addEventListener('change', renderReports));
 
-  function periodRange(p) {
+  function periodRange(p, customFrom = rFrom.value, customTo = rTo.value) {
     const now = new Date();
     const first = (y, m) => isoDate(new Date(y, m, 1));
     const last = (y, m) => isoDate(new Date(y, m + 1, 0));
@@ -277,7 +340,7 @@
         return { from: dates[0] || first(y, m), to: dates.at(-1) > today() ? dates.at(-1) : last(y, m) };
       }
       case 'custom': {
-        let from = rFrom.value || first(y, m), to = rTo.value || last(y, m);
+        let from = customFrom || first(y, m), to = customTo || last(y, m);
         if (from > to) [from, to] = [to, from];
         return { from, to };
       }
@@ -364,9 +427,250 @@
       .sort((a, b) => b.value - a.value);
     Charts.hbars($('#r-method'), methods, v => money(v));
 
+    const accs = [...groupBy(expenses, t => t.accountId || '')]
+      .map(([id, items]) => ({ label: id ? accountName(id) : 'No account', value: sum(items), detail: `${items.length} transaction${items.length > 1 ? 's' : ''} · ${((sum(items) / tt.expense) * 100).toFixed(0)}%` }))
+      .sort((a, b) => b.value - a.value);
+    Charts.hbars($('#r-account'), accs, v => money(v));
+
     // Largest expenses
     renderTxList($('#r-largest'), [...expenses].sort((a, b) => b.amount - a.amount).slice(0, 10), { grouped: false });
   }
+
+  // ---------- Accounts ----------
+  const accForm = $('#acc-form');
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const signedMoney = v => (v < 0 ? '−' : '') + money(Math.abs(v));
+  const accSubtitle = a => [Store.ACCOUNT_TYPES[a.type], a.institution, a.number && `••${a.number.slice(-4)}`].filter(Boolean).join(' · ');
+
+  function accountTotals() {
+    const active = Store.accounts.filter(a => !a.archived);
+    const bals = active.map(a => balanceOf(a));
+    const assets = bals.filter(b => b > 0).reduce((s, b) => s + b, 0);
+    const owed = -bals.filter(b => b < 0).reduce((s, b) => s + b, 0);
+    return { assets, owed, net: assets - owed };
+  }
+
+  function renderAccountSummary(container) {
+    const active = Store.accounts.filter(a => !a.archived);
+    if (!active.length) {
+      container.innerHTML = `<div class="empty">Add your bank accounts, cards and cash to track balances.<br><button class="btn small" data-goto-accounts>Add an account</button></div>`;
+      return;
+    }
+    const t = accountTotals();
+    container.innerHTML = active.map(a => {
+      const b = balanceOf(a);
+      return `<button class="acc-row" data-statement="${a.id}" title="View statement">
+        <span><span class="acc-name">${esc(a.name)}</span><span class="meta">${esc(Store.ACCOUNT_TYPES[a.type])}</span></span>
+        <span class="acc-bal${b < 0 ? ' neg' : ''}">${signedMoney(b)}</span></button>`;
+    }).join('') + `<div class="acc-row total"><span>Net worth</span><span class="acc-bal${t.net < 0 ? ' neg' : ''}">${signedMoney(t.net)}</span></div>`;
+  }
+
+  function renderAccounts() {
+    const showArchived = $('#acc-show-archived').checked;
+    const list = Store.accounts.filter(a => showArchived || !a.archived);
+    const t = accountTotals();
+    $('#acc-totals').innerHTML = Store.accounts.length
+      ? statTile('Net worth', signedMoney(t.net)) + statTile('Money you have', money(t.assets), 'accounts in credit') + statTile('Money you owe', money(t.owed), 'accounts below zero')
+      : '';
+    const mKey = today().slice(0, 7);
+    $('#acc-list').innerHTML = list.length ? list.map(a => {
+      const b = balanceOf(a);
+      const month = Store.transactions.filter(x => monthKey(x.date) === mKey && touches(x, a.id));
+      const inflow = month.reduce((s, x) => s + Math.max(0, effectOn(x, a.id)), 0);
+      const outflow = month.reduce((s, x) => s + Math.max(0, -effectOn(x, a.id)), 0);
+      const count = Store.transactions.filter(x => touches(x, a.id)).length;
+      return `<div class="acc-card${a.archived ? ' archived' : ''}">
+        <div class="acc-card-head">
+          <div style="min-width:0"><div class="acc-name">${esc(a.name)}${a.archived ? ' <span class="tag">Archived</span>' : ''}</div><div class="meta">${esc(accSubtitle(a))}</div></div>
+        </div>
+        <div class="acc-card-bal${b < 0 ? ' neg' : ''}">${signedMoney(b)}</div>
+        <div class="meta">This month: in ${money(inflow)} · out ${money(outflow)}</div>
+        <div class="meta">${count} transaction${count === 1 ? '' : 's'}</div>
+        <div class="btn-row"><button class="btn small" data-statement="${a.id}">Statement</button><button class="btn small" data-edit-acc="${a.id}">Edit</button></div>
+      </div>`;
+    }).join('') : `<div class="empty">No accounts yet. Click <b>+ Add account</b> to add your first bank account, card or cash wallet.</div>`;
+
+    // Unassigned transactions helper (e.g. entries recorded before accounts existed)
+    const unassigned = Store.transactions.filter(x => !x.accountId);
+    const active = Store.accounts.filter(a => !a.archived);
+    $('#unassigned-card').hidden = !unassigned.length || !active.length;
+    if (unassigned.length && active.length) {
+      $('#unassigned-text').textContent = `${unassigned.length} transaction${unassigned.length === 1 ? ' is' : 's are'} not linked to any account, so ${unassigned.length === 1 ? 'it does' : 'they do'} not affect balances. You can assign them all to one account, or edit them one by one.`;
+      fillAccountSelect($('#unassigned-account'), $('#unassigned-account').value, { allowNone: false });
+    }
+    renderStatement();
+  }
+
+  function openAccountForm(acc) {
+    const f = accForm.elements;
+    accForm.reset();
+    f.type.innerHTML = Object.entries(Store.ACCOUNT_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+    f.id.value = acc?.id || '';
+    f.name.value = acc?.name || '';
+    f.type.value = acc?.type || 'bank';
+    f.institution.value = acc?.institution || '';
+    f.number.value = acc?.number || '';
+    f.openingBalance.value = acc ? acc.openingBalance : '';
+    f.archived.checked = !!acc?.archived;
+    $('#acc-form-title').textContent = acc ? `Edit ${acc.name}` : 'Add account';
+    $('#acc-delete').hidden = !acc;
+    $('#acc-form-card').hidden = false;
+    $('#acc-form-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    f.name.focus();
+  }
+  const closeAccountForm = () => { $('#acc-form-card').hidden = true; };
+
+  $('#acc-new').addEventListener('click', () => openAccountForm());
+  $('#acc-cancel').addEventListener('click', closeAccountForm);
+  $('#acc-show-archived').addEventListener('change', renderAccounts);
+  accForm.addEventListener('submit', e => {
+    e.preventDefault();
+    const f = accForm.elements;
+    const name = f.name.value.trim();
+    if (Store.accounts.some(a => a.id !== f.id.value && a.name.toLowerCase() === name.toLowerCase())) {
+      return toast('An account with that name already exists.');
+    }
+    const saved = Store.upsertAccount({
+      id: f.id.value || Store.uid(), name, type: f.type.value, institution: f.institution.value,
+      number: f.number.value, openingBalance: f.openingBalance.value, archived: f.archived.checked,
+    });
+    if (!saved) return;
+    closeAccountForm();
+    if (!$('#st-account').value) stAccountId = saved.id;
+    toast(f.id.value ? 'Account updated' : 'Account added');
+    syncFormType();
+    render();
+  });
+  $('#acc-delete').addEventListener('click', () => {
+    const id = accForm.elements.id.value, acc = Store.accountById(id);
+    if (!acc || !confirm(`Delete the account "${acc.name}"?`)) return;
+    if (!Store.deleteAccount(id)) {
+      alert('This account has transactions, so it can’t be deleted. Tick "Archived" instead to hide it while keeping its history.');
+      return;
+    }
+    closeAccountForm();
+    syncFormType();
+    toast('Account deleted');
+    render();
+  });
+  $('#unassigned-assign').addEventListener('click', () => {
+    const id = $('#unassigned-account').value, acc = Store.accountById(id);
+    const ids = Store.transactions.filter(x => !x.accountId).map(x => x.id);
+    if (!acc || !confirm(`Assign ${ids.length} transaction${ids.length === 1 ? '' : 's'} to "${acc.name}"?`)) return;
+    Store.assignAccount(ids, id);
+    toast('Transactions assigned');
+    render();
+  });
+
+  document.addEventListener('click', e => {
+    const st = e.target.closest('[data-statement]');
+    const ed = e.target.closest('[data-edit-acc]');
+    if (e.target.closest('[data-goto-accounts]')) { showView('accounts'); openAccountForm(); }
+    if (st) {
+      stAccountId = st.dataset.statement;
+      if (currentView !== 'accounts') showView('accounts'); else renderStatement();
+      $('#statement').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    if (ed) openAccountForm(Store.accountById(ed.dataset.editAcc));
+  });
+
+  // ---------- Statements ----------
+  let stAccountId = null;
+  const stPeriod = $('#st-period'), stFrom = $('#st-from'), stTo = $('#st-to');
+  $('#st-account').addEventListener('change', e => { stAccountId = e.target.value; renderStatement(); });
+  stPeriod.addEventListener('change', () => {
+    const custom = stPeriod.value === 'custom';
+    $$('.st-custom').forEach(l => (l.hidden = !custom));
+    if (custom && !stFrom.value) { const r = periodRange('this-month'); stFrom.value = r.from; stTo.value = r.to; }
+    renderStatement();
+  });
+  [stFrom, stTo].forEach(i => i.addEventListener('change', renderStatement));
+
+  function statementData() {
+    const acc = Store.accountById(stAccountId);
+    if (!acc) return null;
+    let { from, to } = periodRange(stPeriod.value, stFrom.value, stTo.value);
+    if (stPeriod.value === 'all') {
+      const dates = Store.transactions.filter(t => touches(t, acc.id)).map(t => t.date).sort();
+      if (dates.length) { from = dates[0]; to = dates.at(-1) > today() ? dates.at(-1) : today(); }
+    }
+    const prevDay = isoDate(new Date(parseDate(from).getTime() - 86400000));
+    const opening = balanceOf(acc, prevDay);
+    let running = opening;
+    const rows = Store.transactions
+      .map((t, i) => ({ t, i }))
+      .filter(({ t }) => touches(t, acc.id) && t.date >= from && t.date <= to)
+      .sort((a, b) => a.t.date.localeCompare(b.t.date) || a.i - b.i)
+      .map(({ t }) => {
+        const amt = effectOn(t, acc.id);
+        running += amt;
+        const transfer = t.type === 'transfer';
+        const other = transfer ? accountName(amt < 0 ? t.toAccountId : t.accountId) : '';
+        return {
+          t, date: t.date,
+          description: t.description || (transfer ? (amt < 0 ? `Transfer to ${other}` : `Transfer from ${other}`) : t.category),
+          category: transfer ? (amt < 0 ? `Transfer to ${other}` : `Transfer from ${other}`) : t.category,
+          out: amt < 0 ? -amt : 0, in: amt > 0 ? amt : 0, balance: running,
+        };
+      });
+    const totalIn = rows.reduce((s, r) => s + r.in, 0), totalOut = rows.reduce((s, r) => s + r.out, 0);
+    return { acc, from, to, opening, closing: running, rows, totalIn, totalOut };
+  }
+
+  function renderStatement() {
+    const sel = $('#st-account');
+    if (!Store.accountById(stAccountId)) stAccountId = (Store.accounts.find(a => !a.archived) || Store.accounts[0])?.id || null;
+    sel.innerHTML = Store.accounts.map(a => `<option value="${a.id}">${esc(a.name)}${a.archived ? ' (archived)' : ''}</option>`).join('');
+    if (stAccountId) sel.value = stAccountId;
+    const d = statementData();
+    const body = $('#st-body');
+    $('#st-csv').disabled = $('#st-print').disabled = !d;
+    if (!d) { body.innerHTML = '<div class="empty">Add an account to see its statement.</div>'; return; }
+    body.innerHTML = `
+      <div class="st-head">
+        <div><div class="st-title">${esc(d.acc.name)}</div><div class="meta">${esc(accSubtitle(d.acc))}</div></div>
+        <div class="st-period"><div>Statement period</div><b>${shortDate(d.from)} – ${shortDate(d.to)}</b></div>
+      </div>
+      <div class="stats st-stats">
+        ${statTile('Opening balance', signedMoney(d.opening), `on ${shortDate(d.from)}`)}
+        ${statTile('Money in', money(d.totalIn), plural(d.rows.filter(r => r.in).length, 'credit'))}
+        ${statTile('Money out', money(d.totalOut), plural(d.rows.filter(r => r.out).length, 'debit'))}
+        ${statTile('Closing balance', signedMoney(d.closing), `on ${shortDate(d.to)}`)}
+      </div>
+      <div class="table-wrap"><table class="st-table">
+        <thead><tr><th>Date</th><th>Description</th><th class="hide-sm">Category</th><th class="num hide-sm">Money out</th><th class="num hide-sm">Money in</th><th class="num show-sm">Amount</th><th class="num">Balance</th></tr></thead>
+        <tbody>
+          <tr class="st-sub"><td>${shortDate(d.from)}</td><td>Opening balance</td><td class="hide-sm"></td><td class="hide-sm"></td><td class="hide-sm"></td><td class="show-sm"></td><td class="num">${signedMoney(d.opening)}</td></tr>
+          ${d.rows.map(r => `<tr>
+            <td class="nowrap">${shortDate(r.date)}</td>
+            <td>${esc(r.description)}${r.t.notes ? `<div class="meta">${esc(r.t.notes)}</div>` : ''}</td>
+            <td class="hide-sm">${esc(r.category)}</td>
+            <td class="num hide-sm">${r.out ? money(r.out) : ''}</td>
+            <td class="num in hide-sm">${r.in ? money(r.in) : ''}</td>
+            <td class="num show-sm${r.in ? ' in' : ''}">${r.in ? '+' + money(r.in) : '−' + money(r.out)}</td>
+            <td class="num">${signedMoney(r.balance)}</td></tr>`).join('')}
+          ${d.rows.length ? '' : '<tr><td colspan="7" class="empty">No transactions in this period.</td></tr>'}
+        </tbody>
+        <tfoot><tr><th colspan="2">Closing balance</th><th class="hide-sm"></th><th class="num hide-sm">${money(d.totalOut)}</th><th class="num hide-sm">${money(d.totalIn)}</th><th class="show-sm"></th><th class="num">${signedMoney(d.closing)}</th></tr></tfoot>
+      </table></div>
+      <p class="muted print-only">Generated by Atlas Money on ${shortDate(today())}.</p>`;
+  }
+
+  $('#st-csv').addEventListener('click', () => {
+    const d = statementData();
+    if (!d) return;
+    const lines = [['Date', 'Description', 'Category', 'Money out', 'Money in', 'Balance']];
+    lines.push([d.from, 'Opening balance', '', '', '', d.opening.toFixed(2)]);
+    d.rows.forEach(r => lines.push([r.date, r.description, r.category, r.out ? r.out.toFixed(2) : '', r.in ? r.in.toFixed(2) : '', r.balance.toFixed(2)]));
+    lines.push([d.to, 'Closing balance', '', d.totalOut.toFixed(2), d.totalIn.toFixed(2), d.closing.toFixed(2)]);
+    const safe = d.acc.name.replace(/[^\w-]+/g, '-').toLowerCase();
+    download(`statement-${safe}-${d.from}-to-${d.to}.csv`, lines.map(l => l.map(csvCell).join(',')).join('\n'), 'text/csv');
+  });
+  $('#st-print').addEventListener('click', () => {
+    document.body.classList.add('print-statement');
+    window.print();
+  });
+  window.addEventListener('afterprint', () => document.body.classList.remove('print-statement'));
 
   // ---------- Settings ----------
   function renderSettings() {
@@ -418,7 +722,7 @@
   });
 
   // ---------- Import / export ----------
-  const CSV_COLS = ['date', 'type', 'amount', 'category', 'description', 'method', 'notes'];
+  const CSV_COLS = ['date', 'type', 'amount', 'account', 'to_account', 'category', 'description', 'method', 'notes'];
   const csvCell = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
 
   function download(name, content, type) {
@@ -431,7 +735,8 @@
 
   $('#export-csv').addEventListener('click', () => {
     const rows = [...Store.transactions].sort((a, b) => a.date.localeCompare(b.date));
-    const csv = [CSV_COLS.join(',')].concat(rows.map(t => CSV_COLS.map(c => csvCell(t[c] ?? '')).join(','))).join('\n');
+    const named = t => ({ ...t, account: t.accountId ? accountName(t.accountId) : '', to_account: t.toAccountId ? accountName(t.toAccountId) : '' });
+    const csv = [CSV_COLS.join(',')].concat(rows.map(named).map(t => CSV_COLS.map(c => csvCell(t[c] ?? '')).join(','))).join('\n');
     download(`atlas-money-${today()}.csv`, csv, 'text/csv');
   });
   $('#export-json').addEventListener('click', () => {
@@ -474,7 +779,11 @@
       } else {
         const rows = parseCSV(text);
         if (!rows.length || !('date' in rows[0]) || !('amount' in rows[0])) throw new Error('CSV needs at least "date" and "amount" columns');
-        const added = Store.mergeTransactions(rows);
+        const added = Store.mergeTransactions(rows.map(r => ({
+          ...r,
+          accountId: Store.ensureAccount(r.account),
+          toAccountId: Store.ensureAccount(r.to_account),
+        })));
         toast(`Imported ${added} transaction${added === 1 ? '' : 's'}`);
       }
       setupFormatters();
@@ -502,6 +811,14 @@
   });
 
   function sampleData() {
+    const bank = Store.ensureAccount('Main Bank Account');
+    const card = Store.ensureAccount('Credit Card');
+    const cash = Store.ensureAccount('Cash Wallet');
+    [[bank, 'bank', 2500], [card, 'credit', 0], [cash, 'cash', 100]].forEach(([id, type, openingBalance]) => {
+      const a = Store.accountById(id);
+      if (a.openingBalance === 0 && !Store.transactions.some(t => touches(t, id))) Store.upsertAccount({ ...a, type, openingBalance });
+    });
+    const accFor = method => method === 'Credit card' ? card : method === 'Cash' ? cash : bank;
     const out = [];
     const rnd = (a, b) => Math.round((a + Math.random() * (b - a)) * 100) / 100;
     const pick = arr => arr[Math.floor(Math.random() * arr.length)];
@@ -524,8 +841,10 @@
       }
       if (Math.random() < 0.6) out.push({ date: d(18), type: 'expense', amount: rnd(25, 90), category: 'Health', description: 'Pharmacy', method: 'Debit card' });
       if (mo === 1) out.push({ date: d(20), type: 'income', amount: 350, category: 'Business', description: 'Freelance project', method: 'Bank transfer' });
+      out.push({ date: d(10), type: 'transfer', amount: 200, accountId: bank, toAccountId: cash, description: 'ATM withdrawal' });
+      if (mo > 0) out.push({ date: d(25), type: 'transfer', amount: 400, accountId: bank, toAccountId: card, description: 'Credit card bill payment' });
     }
-    return out;
+    return out.map(t => ({ accountId: accFor(t.method), ...t }));
   }
 
   // ---------- Render loop ----------
@@ -533,6 +852,7 @@
     if (currentView === 'dashboard') renderDashboard();
     if (currentView === 'transactions') renderTransactions();
     if (currentView === 'reports') renderReports();
+    if (currentView === 'accounts') renderAccounts();
     if (currentView === 'settings') renderSettings();
   }
 

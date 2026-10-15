@@ -8,8 +8,14 @@ const Store = (() => {
     income: ['Salary', 'Business', 'Interest', 'Gifts', 'Refunds', 'Other income'],
   };
 
+  const ACCOUNT_TYPES = {
+    bank: 'Bank account', savings: 'Savings account', credit: 'Credit card',
+    cash: 'Cash', wallet: 'Digital wallet', other: 'Other',
+  };
+
   const defaults = () => ({
-    version: 1,
+    version: 2,
+    accounts: [],
     transactions: [],
     categories: structuredClone(DEFAULT_CATEGORIES),
     settings: { currency: 'USD', budget: null },
@@ -31,9 +37,13 @@ const Store = (() => {
 
   function normalize(data) {
     const base = defaults();
+    const accounts = Array.isArray(data.accounts) ? data.accounts.map(cleanAccount).filter(Boolean) : [];
+    const ids = new Set(accounts.map(a => a.id));
     return {
-      version: 1,
-      transactions: Array.isArray(data.transactions) ? data.transactions.map(cleanTx).filter(Boolean) : [],
+      version: 2,
+      accounts,
+      transactions: Array.isArray(data.transactions)
+        ? data.transactions.map(t => cleanTx(t, ids)).filter(Boolean) : [],
       categories: {
         expense: Array.isArray(data.categories?.expense) ? data.categories.expense : base.categories.expense,
         income: Array.isArray(data.categories?.income) ? data.categories.income : base.categories.income,
@@ -42,15 +52,38 @@ const Store = (() => {
     };
   }
 
-  function cleanTx(t) {
+  function cleanAccount(a) {
+    const name = String(a?.name || '').trim();
+    if (!name) return null;
+    const opening = parseFloat(a.openingBalance);
+    return {
+      id: a.id || uid(),
+      name,
+      type: ACCOUNT_TYPES[a.type] ? a.type : 'bank',
+      institution: String(a.institution || '').trim(),
+      number: String(a.number || '').trim(),
+      openingBalance: isFinite(opening) ? Math.round(opening * 100) / 100 : 0,
+      archived: !!a.archived,
+    };
+  }
+
+  // accountIds: set of valid account ids; unknown references are dropped.
+  function cleanTx(t, accountIds = new Set(state.accounts.map(a => a.id))) {
+    if (!t) return null;
     const amount = Math.abs(parseFloat(t.amount));
-    if (!t || !/^\d{4}-\d{2}-\d{2}$/.test(t.date) || !isFinite(amount) || amount === 0) return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t.date) || !isFinite(amount) || amount === 0) return null;
+    const type = ['income', 'expense', 'transfer'].includes(t.type) ? t.type : 'expense';
+    const accountId = accountIds.has(t.accountId) ? t.accountId : null;
+    const toAccountId = type === 'transfer' && accountIds.has(t.toAccountId) ? t.toAccountId : null;
+    if (type === 'transfer' && (!accountId || !toAccountId || accountId === toAccountId)) return null;
     return {
       id: t.id || uid(),
       date: t.date,
-      type: t.type === 'income' ? 'income' : 'expense',
+      type,
       amount: Math.round(amount * 100) / 100,
-      category: String(t.category || 'Other').trim(),
+      accountId,
+      ...(type === 'transfer' ? { toAccountId } : {}),
+      category: type === 'transfer' ? 'Transfer' : String(t.category || 'Other').trim(),
       description: String(t.description || '').trim(),
       method: String(t.method || '').trim(),
       notes: String(t.notes || '').trim(),
@@ -71,6 +104,41 @@ const Store = (() => {
 
   return {
     get transactions() { return state.transactions; },
+    get accounts() { return state.accounts; },
+    ACCOUNT_TYPES,
+
+    accountById(id) { return state.accounts.find(a => a.id === id); },
+    upsertAccount(acc) {
+      const clean = cleanAccount(acc);
+      if (!clean) return null;
+      const i = state.accounts.findIndex(a => a.id === clean.id);
+      if (i >= 0) state.accounts[i] = clean; else state.accounts.push(clean);
+      save();
+      return clean;
+    },
+    // Only accounts without transactions can be deleted; others get archived.
+    deleteAccount(id) {
+      if (state.transactions.some(t => t.accountId === id || t.toAccountId === id)) return false;
+      state.accounts = state.accounts.filter(a => a.id !== id);
+      save();
+      return true;
+    },
+    assignAccount(txIds, accountId) {
+      const ids = new Set(txIds);
+      state.transactions.forEach(t => { if (ids.has(t.id) && t.type !== 'transfer') t.accountId = accountId; });
+      save();
+    },
+    /** Find an account by name (case-insensitive), creating it if needed. */
+    ensureAccount(name) {
+      name = String(name || '').trim();
+      if (!name) return null;
+      const found = state.accounts.find(a => a.name.toLowerCase() === name.toLowerCase());
+      if (found) return found.id;
+      const acc = cleanAccount({ name });
+      state.accounts.push(acc);
+      save();
+      return acc.id;
+    },
     get categories() { return state.categories; },
     get settings() { return state.settings; },
 
@@ -80,7 +148,7 @@ const Store = (() => {
       const i = state.transactions.findIndex(t => t.id === clean.id);
       if (i >= 0) state.transactions[i] = clean; else state.transactions.push(clean);
       // make sure the category exists in the list for that type
-      if (!state.categories[clean.type].includes(clean.category)) state.categories[clean.type].push(clean.category);
+      if (clean.type !== 'transfer' && !state.categories[clean.type].includes(clean.category)) state.categories[clean.type].push(clean.category);
       save();
       return clean;
     },
@@ -123,7 +191,7 @@ const Store = (() => {
         const c = cleanTx({ ...t, id: undefined });
         if (!c) return;
         state.transactions.push(c);
-        if (!state.categories[c.type].includes(c.category)) state.categories[c.type].push(c.category);
+        if (c.type !== 'transfer' && !state.categories[c.type].includes(c.category)) state.categories[c.type].push(c.category);
       });
       save();
       return state.transactions.length - before;
