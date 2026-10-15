@@ -314,3 +314,24 @@ label small { font-size: .78rem; }
 .bulk-table input, .bulk-table select { padding: 6px 8px; min-width: 90px; }
 .bulk-table .w-sm { min-width: 60px; width: 70px; }
 .bulk-table .num-input { text-align: right; min-width: 100px; }
+
+/* Sign-in & sync */
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.sync { font-size: .8rem; color: var(--muted); white-space: nowrap; }
+.sync::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--good); vertical-align: 1px; }
+.sync[data-state="pending"]::before { background: var(--muted); }
+.sync[data-state="error"] { color: var(--bad); }
+.sync[data-state="error"]::before { background: var(--bad); }
+.sync:empty { display: none; }
+body.locked .app-header, body.locked main { display: none; }
+.auth { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.auth-card { width: 100%; max-width: 420px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 24px; }
+.auth-card .brand { margin-bottom: 18px; }
+.auth-card h2 { font-size: 1.1rem; }
+.auth-card .consent { align-items: flex-start; font-size: .82rem; line-height: 1.4; }
+.auth-card .consent input { margin-top: 3px; }
+.auth-error { color: var(--bad); font-size: .9rem; margin: 0 0 8px; }
+.auth-info { color: var(--good); font-size: .9rem; margin: 0 0 8px; }
+.auth-error:empty, .auth-info:empty { display: none; }
+code { font-size: .85em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+@media (max-width: 520px) { .header-right { width: 100%; justify-content: space-between; } }

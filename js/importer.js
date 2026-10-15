@@ -229,7 +229,7 @@ const Importer = (() => {
     let doc, password;
     for (let attempt = 0; ; attempt++) {
       try {
-        doc = await pdfjs.getDocument({ data: buffer.slice(0), password }).promise;
+        doc = await pdfjs.getDocument({ data: buffer.slice(0), password, isEvalSupported: false }).promise;
         break;
       } catch (e) {
         if (e?.name !== 'PasswordException' || attempt > 4) throw e.name === 'PasswordException' ? new Error('Wrong password for this PDF.') : e;

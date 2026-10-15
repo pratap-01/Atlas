@@ -1,6 +1,8 @@
-/* Persistence layer: everything lives in localStorage under one key. */
+/* In-memory data model. Nothing is written to the browser: every change is handed
+   to the cloud sync layer (js/cloud.js), which encrypts it and saves it to Supabase. */
 const Store = (() => {
-  const KEY = 'atlas-money-v1';
+  const LEGACY_KEY = 'atlas-money-v1'; // older versions kept data in localStorage
+  const listeners = [];
 
   const DEFAULT_CATEGORIES = {
     expense: ['Food & Dining', 'Groceries', 'Transport', 'Housing & Rent', 'Utilities',
@@ -23,19 +25,7 @@ const Store = (() => {
     settings: { currency: 'USD', budget: null },
   });
 
-  let state = load();
-
-  function load() {
-    try {
-      const raw = localStorage.getItem(KEY);
-      if (!raw) return defaults();
-      const data = JSON.parse(raw);
-      return normalize(data);
-    } catch (e) {
-      console.warn('Could not read saved data, starting fresh.', e);
-      return defaults();
-    }
-  }
+  let state = defaults();
 
   function normalize(data) {
     const base = defaults();
@@ -98,11 +88,7 @@ const Store = (() => {
   }
 
   function save() {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(state));
-    } catch (e) {
-      alert('Could not save — browser storage may be full or disabled.');
-    }
+    listeners.forEach(fn => fn());
   }
 
   function uid() {
@@ -193,6 +179,20 @@ const Store = (() => {
       state = normalize(data);
       save();
     },
+    /** Replace the in-memory data without triggering a save (used when loading from the cloud). */
+    load(data) { state = data ? normalize(data) : defaults(); },
+    onChange(fn) { listeners.push(fn); },
+    normalize,
+    /** Data left in this browser by older versions of Atlas, if any. */
+    legacyData() {
+      try {
+        const raw = localStorage.getItem(LEGACY_KEY);
+        if (!raw) return null;
+        const data = normalize(JSON.parse(raw));
+        return data.transactions.length || data.accounts.length ? data : null;
+      } catch { return null; }
+    },
+    clearLegacy() { try { localStorage.removeItem(LEGACY_KEY); } catch { /* ignore */ } },
     mergeTransactions(list) {
       const before = state.transactions.length;
       list.forEach(t => {

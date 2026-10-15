@@ -1330,7 +1330,9 @@
   }
 
   // ---------- Render loop ----------
+  let started = false;
   function render() {
+    if (!started) return; // locked: nothing to draw yet
     if (currentView === 'dashboard') renderDashboard();
     if (currentView === 'transactions') renderTransactions();
     if (currentView === 'reports') renderReports();
@@ -1342,10 +1344,12 @@
 
   let resizeTimer;
   window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 150); });
-  // Keep tabs in sync if data changes in another tab
-  window.addEventListener('storage', () => location.reload());
-
-  setupFormatters();
-  resetForm();
-  render();
+  // Started by Cloud once the user has signed in and the encrypted data is decrypted.
+  window.AtlasApp = {
+    start() { started = true; setupFormatters(); resetForm(); render(); },
+  };
+  Cloud.onRemoteChange(() => { setupFormatters(); syncFormType(); render(); });
+  $('#sign-out').addEventListener('click', () => Cloud.signOut());
+  $('#lock-now').addEventListener('click', () => Cloud.lockNow());
+  Cloud.boot();
 })();

@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The page may only talk to Supabase and load code from itself and cdnjs (Excel/PDF readers). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com; worker-src 'self' blob: https://cdnjs.cloudflare.com; connect-src 'self' https://*.supabase.co; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
   <title>Atlas Money</title>
   <link rel="stylesheet" href="css/styles.css">
 </head>
@@ -17,7 +20,36 @@
       <button role="tab" data-view="reports">Reports</button>
       <button role="tab" data-view="settings">Settings</button>
     </nav>
+    <div class="header-right">
+      <span id="sync-status" class="sync" data-state="saved" aria-live="polite"></span>
+      <button class="btn small" id="lock-now" title="Lock Atlas and clear your data from this screen">Lock</button>
+    </div>
   </header>
+
+  <div class="auth" id="auth" hidden>
+    <div class="auth-card">
+      <h1 class="brand">Atlas <span>Money</span></h1>
+      <div id="auth-setup" hidden>
+        <h2>Cloud storage isn't set up yet</h2>
+        <p class="muted">This copy of Atlas hasn't been connected to a Supabase project. Follow "Cloud storage setup" in the README, then add your project URL and key to <code>js/config.js</code>.</p>
+      </div>
+      <form id="auth-form" autocomplete="on">
+        <h2 id="auth-title">Sign in to Atlas</h2>
+        <p class="muted">Your data is encrypted on this device before it's saved. Only your password can unlock it.</p>
+        <label>Email<input type="email" name="email" required autocomplete="username" inputmode="email"></label>
+        <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
+        <label class="signup-only" hidden>Confirm password<input type="password" name="confirm" autocomplete="new-password"></label>
+        <label class="inline-check signup-only consent" hidden><input type="checkbox" name="understand">
+          <span>I understand that my password is the only key to my data. If I forget it, nobody, including Supabase, can recover my data. I'll keep it in a password manager and export backups.</span></label>
+        <p class="auth-error" id="auth-error" role="alert"></p>
+        <p class="auth-info" id="auth-info" role="status"></p>
+        <div class="form-actions">
+          <button type="submit" class="btn primary" id="auth-submit">Sign in</button>
+          <button type="button" class="btn link" id="auth-toggle">Create an account</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <main>
     <div class="banner" id="review-banner" hidden>
@@ -377,8 +409,15 @@
             </label>
           </div>
           <div class="card">
+            <h2>Account &amp; security</h2>
+            <p class="muted">Signed in as <b id="account-email"></b>. Your data is end-to-end encrypted with your password and synced to your Supabase project. Nothing is stored in this browser, and Atlas locks itself after 30 minutes without activity.</p>
+            <div class="btn-row">
+              <button class="btn" id="sign-out">Sign out</button>
+            </div>
+          </div>
+          <div class="card">
             <h2>Data</h2>
-            <p class="muted">Your data is stored only in this browser. Export a backup regularly.</p>
+            <p class="muted">Exported files are <b>not</b> encrypted. Keep them somewhere private, and never commit them to the repository.</p>
             <div class="btn-row">
               <button class="btn" id="export-csv">Export CSV</button>
               <button class="btn" id="export-json">Export backup (JSON)</button>
@@ -397,7 +436,9 @@
   <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
   <div id="toast" class="toast" hidden></div>
 
+  <script src="js/config.js"></script>
   <script src="js/storage.js"></script>
+  <script src="js/cloud.js"></script>
   <script src="js/importer.js"></script>
   <script src="js/charts.js"></script>
   <script src="js/app.js"></script>
