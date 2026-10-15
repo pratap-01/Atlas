@@ -2,13 +2,21 @@
 
 A simple, private money manager that runs entirely in your browser. You can record your daily income and expenses, sort them into categories, and see reports on where your money goes.
 
-No server, no sign-up and no dependencies. Your data is saved in the browser's `localStorage`.
+No server, no sign-up and no build step. Your data is saved in the browser's `localStorage`. Statements are read entirely in your browser and never uploaded anywhere. The Excel and PDF readers (SheetJS and PDF.js) are downloaded from cdnjs the first time you import one of those file types.
 
 ## Features
 
 - **Record transactions**: amount, date, expense or income, category, payment method, description and notes. You can edit or delete any entry.
 - **Bank accounts**: add bank, savings, credit card, cash and wallet accounts with a starting balance. Every transaction can be recorded against an account, and **transfers** move money between accounts (e.g. an ATM withdrawal or a credit-card bill payment) without counting as income or spending. The **Accounts** tab shows each account's current balance, this month's money in and out, and your net worth. You can archive old accounts to hide them while keeping their history. Transactions recorded before you added accounts can be assigned to one in bulk.
 - **Statements**: pick an account and a period to see the opening balance, every credit and debit with a running balance, totals, and the closing balance. Export a statement to CSV, or use Print / PDF.
+- **Bulk add accounts**: **Accounts → Add several** lets you enter many accounts at once in a table.
+- **Import bank statements** (**Import** tab): upload statements as CSV, Excel (XLS/XLSX/ODS), OFX/QFX or PDF. You can upload several files for the same account at once.
+  - Atlas finds the header row and detects the date, description, money in/out (or a signed amount with a Dr/Cr marker) and balance columns. It works out whether dates are day-first or month-first and handles formats like `1,23,456.78`, `(45.00)` and `500.00 Dr`. You can correct any column choice, and a live preview updates as you do.
+  - PDF statements are read in the browser (password-protected PDFs are supported). The running balance is used to tell money in from money out. Rows Atlas isn't sure about are flagged so you can swap them with ⇄. Scanned (image-only) PDFs can't be read; download a CSV or Excel copy instead.
+  - Rows already imported (including from overlapping statements) are skipped. Rows matching something you entered by hand are flagged as possible duplicates.
+  - If the statement shows a running balance, Atlas can set the account's starting balance so its balance matches the statement.
+  - Imported transactions keep the bank's own text, but the description and category are left empty for you to fill in.
+- **Review list**: every imported transaction waits in **Import → Review** until you add a description and a category. Press Enter to save a row and jump to the next one, tick several rows to give them a category at once, or mark a row as a transfer between your accounts. When the other account's statement has the matching entry, the two are merged, so it isn't counted twice.
 - **Categories**: comes with sensible defaults for expenses and income. You can add, rename (existing transactions update too) or remove categories in **Settings**.
 - **Dashboard**: this month's spending, earnings, net savings and change vs. last month. It also shows an optional monthly budget meter, top categories and recent transactions.
 - **Transactions**: search and filter by date range, type and category, with running totals for the filtered set.
@@ -41,6 +49,7 @@ To use it on your phone, host the folder on any static host, such as GitHub Page
 index.html        UI markup (Dashboard, Transactions, Reports, Settings)
 css/styles.css    Styles, including dark mode
 js/storage.js     localStorage persistence and data model
+js/importer.js    Statement parsing (CSV, Excel, OFX, PDF), column detection
 js/charts.js      Small SVG chart helpers (bars and columns with hover tooltips)
 js/app.js         App logic: forms, filters, reports, import and export
 ```

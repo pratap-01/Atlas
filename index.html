@@ -13,12 +13,17 @@
       <button role="tab" data-view="dashboard" class="active">Dashboard</button>
       <button role="tab" data-view="transactions">Transactions</button>
       <button role="tab" data-view="accounts">Accounts</button>
+      <button role="tab" data-view="import">Import <span class="badge" id="review-badge" hidden></span></button>
       <button role="tab" data-view="reports">Reports</button>
       <button role="tab" data-view="settings">Settings</button>
     </nav>
   </header>
 
   <main>
+    <div class="banner" id="review-banner" hidden>
+      <span id="review-banner-text"></span>
+      <button class="btn small primary" data-goto="import">Review now</button>
+    </div>
     <!-- Dashboard -->
     <section id="view-dashboard" class="view active">
       <div class="grid-2">
@@ -109,7 +114,10 @@
       <div class="card">
         <div class="card-head">
           <h2>Your accounts</h2>
-          <button class="btn primary" id="acc-new">+ Add account</button>
+          <div class="btn-row">
+            <button class="btn" id="acc-bulk-open">Add several</button>
+            <button class="btn primary" id="acc-new">+ Add account</button>
+          </div>
         </div>
         <div class="stats" id="acc-totals"></div>
         <div class="acc-grid" id="acc-list"></div>
@@ -141,6 +149,22 @@
             <button type="button" class="btn danger" id="acc-delete" hidden>Delete account</button>
           </div>
         </form>
+      </div>
+
+      <div class="card" id="acc-bulk-card" hidden>
+        <h2>Add several accounts</h2>
+        <p class="muted">Fill one row per account. Rows without a name are ignored.</p>
+        <div class="table-wrap">
+          <table class="bulk-table">
+            <thead><tr><th>Account name</th><th>Type</th><th>Bank / institution</th><th>Last 4</th><th class="num">Starting balance</th><th></th></tr></thead>
+            <tbody id="acc-bulk-rows"></tbody>
+          </table>
+        </div>
+        <div class="form-actions" style="margin-top:12px">
+          <button class="btn" id="acc-bulk-row">+ Add row</button>
+          <button class="btn primary" id="acc-bulk-save">Save accounts</button>
+          <button class="btn" id="acc-bulk-cancel">Cancel</button>
+        </div>
       </div>
 
       <div class="card" id="unassigned-card" hidden>
@@ -177,6 +201,74 @@
           <label class="st-custom" hidden>To<input type="date" id="st-to"></label>
         </div>
         <div id="st-body"></div>
+      </div>
+    </section>
+
+    <!-- Import -->
+    <section id="view-import" class="view">
+      <div class="card">
+        <h2>Import bank statements</h2>
+        <p class="muted">Upload statements downloaded from your bank. Atlas reads the date and amount of every transaction and keeps the bank's text for reference. You then add the description and category yourself in the Review list below.</p>
+        <div class="form-row">
+          <label>Statement account
+            <select id="imp-account"></select>
+          </label>
+          <label id="imp-new-wrap" hidden>New account name
+            <input type="text" id="imp-new-name" maxlength="60" placeholder="e.g. HDFC Savings">
+          </label>
+        </div>
+        <label class="dropzone" id="imp-drop">
+          <input type="file" id="imp-files" multiple accept=".csv,.tsv,.txt,.xlsx,.xls,.xlsm,.ods,.ofx,.qfx,.qbo,.pdf" hidden>
+          <strong>Choose statement files</strong> or drop them here
+          <span class="muted">CSV, Excel (XLS/XLSX), OFX/QFX or PDF · several files for the same account are fine</span>
+        </label>
+        <p class="muted" id="imp-status"></p>
+      </div>
+
+      <div class="card" id="imp-mapping" hidden>
+        <div class="card-head">
+          <h2>Check the columns</h2>
+          <label class="inline-label" id="imp-file-pick-wrap" hidden>File <select id="imp-file-pick"></select></label>
+        </div>
+        <p class="muted">Atlas guessed which column is which. Fix anything that's wrong, and the preview below updates.</p>
+        <div class="map-grid" id="imp-map-fields"></div>
+        <div class="table-wrap"><table class="raw-table" id="imp-raw"></table></div>
+      </div>
+
+      <div class="card" id="imp-preview" hidden>
+        <div class="card-head">
+          <h2>Preview</h2>
+          <span class="muted" id="imp-summary"></span>
+        </div>
+        <div class="filters">
+          <label>Date order
+            <select id="imp-datefmt">
+              <option value="dmy">Day first (31/12/2026)</option>
+              <option value="mdy">Month first (12/31/2026)</option>
+            </select>
+          </label>
+          <label class="inline-check"><input type="checkbox" id="imp-invert"> Swap money in / out (some card statements)</label>
+        </div>
+        <label class="inline-check" id="imp-balance-wrap" hidden><input type="checkbox" id="imp-set-balance"> <span id="imp-balance-text"></span></label>
+        <div class="table-wrap"><table class="preview-table" id="imp-table"></table></div>
+        <div class="form-actions" style="margin-top:12px">
+          <button class="btn primary" id="imp-confirm">Import</button>
+          <button class="btn" id="imp-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <div class="card" id="review">
+        <div class="card-head">
+          <h2>Review imported transactions</h2>
+          <span class="muted" id="review-count"></span>
+        </div>
+        <div id="review-tools" class="filters" hidden>
+          <label>Account<select id="review-account"><option value="">All accounts</option></select></label>
+          <label>Set category for ticked rows<select id="review-bulk-cat"></select></label>
+          <button class="btn" id="review-bulk-apply">Apply</button>
+          <button class="btn primary" id="review-save-all">Save all completed</button>
+        </div>
+        <div id="review-list"></div>
       </div>
     </section>
 
@@ -306,6 +398,7 @@
   <div id="toast" class="toast" hidden></div>
 
   <script src="js/storage.js"></script>
+  <script src="js/importer.js"></script>
   <script src="js/charts.js"></script>
   <script src="js/app.js"></script>
 </body>

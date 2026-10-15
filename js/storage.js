@@ -8,6 +8,8 @@ const Store = (() => {
     income: ['Salary', 'Business', 'Interest', 'Gifts', 'Refunds', 'Other income'],
   };
 
+  const UNCATEGORIZED = 'Uncategorized';
+
   const ACCOUNT_TYPES = {
     bank: 'Bank account', savings: 'Savings account', credit: 'Credit card',
     cash: 'Cash', wallet: 'Digital wallet', other: 'Other',
@@ -87,6 +89,11 @@ const Store = (() => {
       description: String(t.description || '').trim(),
       method: String(t.method || '').trim(),
       notes: String(t.notes || '').trim(),
+      ...(t.statementText ? { statementText: String(t.statementText).trim() } : {}),
+      ...(t.needsReview ? { needsReview: true } : {}),
+      // transfers built from imports: which account statementText came from, and the other side's bank text
+      ...(type === 'transfer' && t.statementAccountId ? { statementAccountId: t.statementAccountId } : {}),
+      ...(type === 'transfer' && t.linkedText ? { linkedText: String(t.linkedText), linkedDate: t.linkedDate || t.date } : {}),
     };
   }
 
@@ -106,6 +113,7 @@ const Store = (() => {
     get transactions() { return state.transactions; },
     get accounts() { return state.accounts; },
     ACCOUNT_TYPES,
+    UNCATEGORIZED,
 
     accountById(id) { return state.accounts.find(a => a.id === id); },
     upsertAccount(acc) {
@@ -148,7 +156,7 @@ const Store = (() => {
       const i = state.transactions.findIndex(t => t.id === clean.id);
       if (i >= 0) state.transactions[i] = clean; else state.transactions.push(clean);
       // make sure the category exists in the list for that type
-      if (clean.type !== 'transfer' && !state.categories[clean.type].includes(clean.category)) state.categories[clean.type].push(clean.category);
+      if (clean.type !== 'transfer' && clean.category !== UNCATEGORIZED && !state.categories[clean.type].includes(clean.category)) state.categories[clean.type].push(clean.category);
       save();
       return clean;
     },
@@ -191,10 +199,17 @@ const Store = (() => {
         const c = cleanTx({ ...t, id: undefined });
         if (!c) return;
         state.transactions.push(c);
-        if (c.type !== 'transfer' && !state.categories[c.type].includes(c.category)) state.categories[c.type].push(c.category);
+        if (c.type !== 'transfer' && c.category !== UNCATEGORIZED && !state.categories[c.type].includes(c.category)) state.categories[c.type].push(c.category);
       });
       save();
       return state.transactions.length - before;
+    },
+    /** Add already-validated imported rows in one save. Returns the added transactions. */
+    addImported(list) {
+      const added = list.map(t => cleanTx({ ...t, id: undefined })).filter(Boolean);
+      state.transactions.push(...added);
+      save();
+      return added;
     },
     exportData() { return structuredClone(state); },
     clear() { state = defaults(); save(); },

@@ -133,7 +133,12 @@
     if (transfer && Store.accounts.filter(a => !a.archived).length < 2) {
       return toast('Add at least two accounts (Accounts tab) to record a transfer.');
     }
+    const before = Store.transactions.find(x => x.id === f.id.value);
     const saved = Store.upsertTx({
+      statementText: before?.statementText,
+      statementAccountId: before?.statementAccountId,
+      linkedText: before?.linkedText,
+      linkedDate: before?.linkedDate,
       id: f.id.value || Store.uid(),
       type: formType(),
       amount: f.amount.value,
@@ -207,8 +212,8 @@
       return `
       <div class="tx">
         <div style="min-width:0">
-          <div class="desc">${esc(t.description || (transfer ? route : t.category))}</div>
-          <div class="meta">${meta}${t.notes ? ' · ' + esc(t.notes) : ''}</div>
+          <div class="desc${t.description ? '' : ' faint'}">${esc(t.description || (transfer ? route : t.statementText || t.category))}</div>
+          <div class="meta">${t.needsReview ? '<span class="pill warn">To review</span>' : ''}${meta}${t.notes ? ' · ' + esc(t.notes) : ''}${t.statementText && t.description ? ` · <span title="Bank description">${esc(t.statementText)}</span>` : ''}</div>
         </div>
         <div class="amt ${t.type}">${transfer ? '⇄ ' : t.type === 'income' ? '+' : '−'}${money(t.amount)}</div>
         <div class="actions">
@@ -303,7 +308,7 @@
       (!filters.type.value || t.type === filters.type.value) &&
       (!filters.account.value || (filters.account.value === 'none' ? !t.accountId : touches(t, filters.account.value))) &&
       (!filters.category.value || t.category === filters.category.value) &&
-      (!q || `${t.description} ${t.notes} ${t.category}`.toLowerCase().includes(q)));
+      (!q || `${t.description} ${t.notes} ${t.category} ${t.statementText || ''}`.toLowerCase().includes(q)));
     const tt = totals(list);
     $('#tx-summary').innerHTML = list.length
       ? `${list.length} transaction${list.length > 1 ? 's' : ''} · Spent <b>${money(tt.expense)}</b> · Earned <b>${money(tt.income)}</b> · Net <b>${money(tt.net)}</b>`
@@ -672,6 +677,482 @@
   });
   window.addEventListener('afterprint', () => document.body.classList.remove('print-statement'));
 
+  // ---------- Bulk add accounts ----------
+  function bulkRowHtml() {
+    const types = Object.entries(Store.ACCOUNT_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+    return `<tr>
+      <td><input type="text" data-f="name" maxlength="60" placeholder="e.g. SBI Savings" aria-label="Account name"></td>
+      <td><select data-f="type" aria-label="Type">${types}</select></td>
+      <td><input type="text" data-f="institution" maxlength="60" placeholder="Optional" aria-label="Bank"></td>
+      <td><input type="text" data-f="number" maxlength="8" placeholder="1234" aria-label="Last 4 digits" class="w-sm"></td>
+      <td><input type="number" data-f="openingBalance" step="0.01" placeholder="0.00" aria-label="Starting balance" class="num-input"></td>
+      <td><button class="btn small" data-bulk-remove aria-label="Remove row">×</button></td>
+    </tr>`;
+  }
+  $('#acc-bulk-open').addEventListener('click', () => {
+    $('#acc-bulk-rows').innerHTML = bulkRowHtml().repeat(4);
+    $('#acc-bulk-card').hidden = false;
+    $('#acc-bulk-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('#acc-bulk-rows input').focus();
+  });
+  $('#acc-bulk-row').addEventListener('click', () => $('#acc-bulk-rows').insertAdjacentHTML('beforeend', bulkRowHtml()));
+  $('#acc-bulk-cancel').addEventListener('click', () => { $('#acc-bulk-card').hidden = true; });
+  $('#acc-bulk-rows').addEventListener('click', e => {
+    if (e.target.closest('[data-bulk-remove]')) e.target.closest('tr').remove();
+  });
+  $('#acc-bulk-save').addEventListener('click', () => {
+    const rows = $$('#acc-bulk-rows tr').map(tr => Object.fromEntries($$('[data-f]', tr).map(i => [i.dataset.f, i.value.trim()])));
+    const named = rows.filter(r => r.name);
+    if (!named.length) return toast('Enter at least one account name.');
+    const existing = new Set(Store.accounts.map(a => a.name.toLowerCase()));
+    const seen = new Set(), clashes = [];
+    named.forEach(r => {
+      const k = r.name.toLowerCase();
+      if (existing.has(k) || seen.has(k)) clashes.push(r.name);
+      seen.add(k);
+    });
+    if (clashes.length) return alert(`These names are already used: ${clashes.join(', ')}. Please give each account a different name.`);
+    named.forEach(r => Store.upsertAccount({ ...r, id: Store.uid() }));
+    $('#acc-bulk-card').hidden = true;
+    toast(`${plural(named.length, 'account')} added`);
+    syncFormType();
+    render();
+  });
+
+  // ---------- Statement import ----------
+  const imp = { files: [], current: 0, overrides: new Map(), rows: [], closing: null };
+  const impAccount = $('#imp-account');
+  const MAP_FIELDS = [
+    ['date', 'Date'], ['desc', 'Bank description'], ['debit', 'Money out'], ['credit', 'Money in'],
+    ['amount', 'Amount (+/−)'], ['drcr', 'Debit/Credit marker'], ['balance', 'Balance'],
+  ];
+
+  function fillImportAccounts() {
+    const prev = impAccount.value || Store.settings.lastImportAccountId;
+    const active = Store.accounts.filter(a => !a.archived);
+    impAccount.innerHTML = active.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('') + '<option value="__new">+ New account…</option>';
+    impAccount.value = [...impAccount.options].some(o => o.value === prev) ? prev : (active[0]?.id || '__new');
+    $('#imp-new-wrap').hidden = impAccount.value !== '__new';
+  }
+  impAccount.addEventListener('change', () => {
+    $('#imp-new-wrap').hidden = impAccount.value !== '__new';
+    if (impAccount.value !== '__new') Store.setSetting('lastImportAccountId', impAccount.value);
+    if (imp.files.length) buildPreview();
+  });
+
+  const drop = $('#imp-drop');
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, () => drop.classList.remove('over')));
+  drop.addEventListener('drop', e => { e.preventDefault(); loadStatementFiles([...e.dataTransfer.files]); });
+  $('#imp-files').addEventListener('change', e => { loadStatementFiles([...e.target.files]); e.target.value = ''; });
+
+  async function loadStatementFiles(files) {
+    if (!files.length) return;
+    const status = $('#imp-status');
+    status.textContent = `Reading ${plural(files.length, 'file')}…`;
+    const ok = [], errors = [];
+    for (const file of files) {
+      try {
+        const data = await Importer.readFile(file, retry =>
+          Promise.resolve(prompt(`${retry ? 'That password didn’t work. ' : ''}"${file.name}" is password protected. Enter its password:`)));
+        const f = { name: file.name, ...data };
+        if (f.kind === 'table') {
+          f.headerIdx = Importer.detectHeader(f.rows);
+          f.map = Importer.autoMap(f.headerIdx >= 0 ? f.rows[f.headerIdx] : []);
+        }
+        ok.push(f);
+      } catch (err) {
+        console.error(err);
+        errors.push(`${file.name}: ${err.message || 'could not be read'}`);
+      }
+    }
+    imp.files = ok;
+    imp.current = Math.max(0, ok.findIndex(f => f.kind === 'table'));
+    imp.overrides = new Map();
+    $('#imp-datefmt').value = Importer.detectDateFormat(sampleDates());
+    $('#imp-invert').checked = false;
+    status.textContent = errors.length ? `Couldn't read: ${errors.join(' · ')}` : '';
+    renderMapping();
+    buildPreview();
+    if (ok.length) $((ok.some(f => f.kind === 'table') ? '#imp-mapping' : '#imp-preview')).scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function sampleDates() {
+    return imp.files.flatMap(f => {
+      if (f.kind === 'table') return f.map.date >= 0 ? f.rows.slice(f.headerIdx + 1, f.headerIdx + 200).map(r => r[f.map.date]) : [];
+      if (f.kind === 'pdf') return f.lines.map(l => l.slice(0, 12));
+      return [];
+    });
+  }
+
+  function renderMapping() {
+    const tables = imp.files.filter(f => f.kind === 'table');
+    $('#imp-mapping').hidden = !tables.length;
+    if (!tables.length) return;
+    const pick = $('#imp-file-pick');
+    $('#imp-file-pick-wrap').hidden = tables.length < 2;
+    pick.innerHTML = imp.files.map((f, i) => f.kind === 'table' ? `<option value="${i}">${esc(f.name)}</option>` : '').join('');
+    pick.value = imp.current;
+    const f = imp.files[imp.current];
+    const width = Math.max(...f.rows.slice(0, 50).map(r => r.length));
+    const header = f.headerIdx >= 0 ? f.rows[f.headerIdx] : [];
+    const colName = i => (header[i] ? `${header[i]}` : `Column ${i + 1}`);
+    const opts = sel => '<option value="-1">— none —</option>' +
+      [...Array(width)].map((_, i) => `<option value="${i}"${i === sel ? ' selected' : ''}>${esc(colName(i))}</option>`).join('');
+    $('#imp-map-fields').innerHTML =
+      `<label>Header row<input type="number" min="0" max="${f.rows.length}" value="${f.headerIdx + 1}" data-map-header title="0 = no header row"></label>` +
+      MAP_FIELDS.map(([k, label]) => `<label>${label}<select data-map="${k}">${opts(f.map[k])}</select></label>`).join('');
+    const start = Math.max(0, f.headerIdx);
+    const shown = f.rows.slice(start, start + 6);
+    $('#imp-raw').innerHTML = `<caption class="muted">First rows of ${esc(f.name)}</caption>` + shown.map((r, i) =>
+      `<tr${i === 0 && f.headerIdx >= 0 ? ' class="hdr"' : ''}>${[...Array(width)].map((_, c) => `<td>${esc(r[c] ?? '')}</td>`).join('')}</tr>`).join('');
+  }
+  $('#imp-file-pick').addEventListener('change', e => { imp.current = +e.target.value; renderMapping(); });
+  $('#imp-map-fields').addEventListener('change', e => {
+    const f = imp.files[imp.current];
+    if (e.target.matches('[data-map-header]')) {
+      f.headerIdx = Math.min(f.rows.length - 1, Math.max(0, parseInt(e.target.value, 10) || 0)) - 1;
+      f.map = Importer.autoMap(f.headerIdx >= 0 ? f.rows[f.headerIdx] : []);
+      renderMapping();
+    } else if (e.target.matches('[data-map]')) {
+      f.map[e.target.dataset.map] = +e.target.value;
+    }
+    imp.overrides = new Map();
+    buildPreview();
+  });
+  $('#imp-datefmt').addEventListener('change', buildPreview);
+  $('#imp-invert').addEventListener('change', buildPreview);
+
+  const NO_TEXT = '(no bank description)';
+  const normText = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const fingerprint = (date, signed, text) => `${date}|${signed.toFixed(2)}|${normText(text)}`;
+
+  function buildPreview() {
+    const fmt = $('#imp-datefmt').value, invert = $('#imp-invert').checked;
+    const rows = [];
+    let closing = null;
+    imp.files.forEach((f, fi) => {
+      let txs = f.kind === 'table' ? Importer.mapTable(f.rows, f.headerIdx, f.map, { fmt })
+        : f.kind === 'pdf' ? Importer.parsePdfLines(f.lines, fmt) : f.txs.map(t => ({ ...t }));
+      const c = f.closing || Importer.closingFrom(txs);
+      if (c && (!closing || c.date >= closing.date)) closing = c;
+      if (invert) txs = txs.map(t => ({ ...t, amount: -t.amount, balance: t.balance == null ? null : -t.balance }));
+      txs.forEach((t, ri) => rows.push({ ...t, key: `${fi}:${ri}`, file: f.name }));
+    });
+    if (closing && invert) closing = { ...closing, balance: -closing.balance };
+    rows.sort((a, b) => a.date.localeCompare(b.date));
+
+    // Duplicates: against what's already in the account, and between overlapping files.
+    const accId = impAccount.value !== '__new' ? impAccount.value : null;
+    const existing = new Map(), loose = new Map();
+    if (accId) Store.transactions.forEach(t => {
+      const amt = effectOn(t, accId);
+      if (!amt) return;
+      const linkedSide = t.type === 'transfer' && t.statementAccountId && t.statementAccountId !== accId;
+      const text = linkedSide ? t.linkedText : t.statementText;
+      const date = linkedSide && t.linkedDate ? t.linkedDate : t.date;
+      const key = text != null ? fingerprint(date, amt, text) : `${date}|${amt.toFixed(2)}`;
+      const map = text != null ? existing : loose;
+      map.set(key, (map.get(key) || 0) + 1);
+    });
+    // Overlapping files: a row is new up to the most copies any single file has, minus copies already imported.
+    const perFile = new Map(), maxInFiles = new Map();
+    rows.forEach(r => {
+      r.fp = fingerprint(r.date, r.amount, r.text || NO_TEXT);
+      const k = `${r.fp}#${r.file}`, n = (perFile.get(k) || 0) + 1;
+      perFile.set(k, n);
+      maxInFiles.set(r.fp, Math.max(maxInFiles.get(r.fp) || 0, n));
+    });
+    const keepLeft = new Map();
+    rows.forEach(r => {
+      if (!keepLeft.has(r.fp)) keepLeft.set(r.fp, Math.max(0, maxInFiles.get(r.fp) - (existing.get(r.fp) || 0)));
+      if (!keepLeft.get(r.fp)) { r.status = 'duplicate'; return; }
+      keepLeft.set(r.fp, keepLeft.get(r.fp) - 1);
+      // Same date + amount as something typed in by hand: likely the same transaction.
+      const lk = `${r.date}|${r.amount.toFixed(2)}`;
+      if (loose.get(lk) > 0) { r.status = 'possible'; loose.set(lk, loose.get(lk) - 1); }
+      else r.status = r.uncertain ? 'check' : 'new';
+    });
+    rows.forEach(r => {
+      const o = imp.overrides.get(r.key) || {};
+      if (o.flip) r.amount = -r.amount;
+      r.include = o.include ?? (r.status === 'new' || r.status === 'check');
+    });
+    imp.rows = rows;
+    imp.closing = closing;
+    renderPreview();
+  }
+
+  function renderPreview() {
+    const card = $('#imp-preview');
+    card.hidden = !imp.files.length;
+    if (!imp.files.length) return;
+    const rows = imp.rows;
+    const inc = rows.filter(r => r.include);
+    const totIn = inc.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0);
+    const totOut = inc.filter(r => r.amount < 0).reduce((s, r) => s - r.amount, 0);
+    const dups = rows.filter(r => r.status === 'duplicate').length;
+    const checks = rows.filter(r => r.status === 'check').length;
+    $('#imp-summary').textContent = rows.length
+      ? `${plural(inc.length, 'transaction')} selected · in ${money(totIn)} · out ${money(totOut)}${dups ? ` · ${plural(dups, 'duplicate')} skipped` : ''}`
+      : '';
+    $('#imp-confirm').disabled = !inc.length;
+    $('#imp-confirm').textContent = inc.length ? `Import ${plural(inc.length, 'transaction')}` : 'Import';
+
+    // Starting-balance helper when the statement shows a running balance.
+    const accId = impAccount.value !== '__new' ? impAccount.value : null;
+    const acc = accId && Store.accountById(accId);
+    const wrap = $('#imp-balance-wrap');
+    wrap.hidden = !imp.closing;
+    if (imp.closing) {
+      const fresh = !acc || !Store.transactions.some(t => touches(t, acc.id));
+      $('#imp-balance-text').innerHTML = `Set this account's starting balance so its balance on ${shortDate(imp.closing.date)} matches the statement (<b>${signedMoney(imp.closing.balance)}</b>)`;
+      if (!wrap.dataset.touched) $('#imp-set-balance').checked = fresh;
+    }
+
+    const STATUS = {
+      new: '', check: '<span class="pill warn" title="Atlas couldn’t tell if this was money in or out. Use ⇄ to swap it if needed.">Check in/out</span>',
+      duplicate: '<span class="pill">Already imported</span>', possible: '<span class="pill warn" title="An entry with the same date and amount already exists in this account.">Possible duplicate</span>',
+    };
+    $('#imp-table').innerHTML = rows.length ? `
+      <thead><tr><th><input type="checkbox" id="imp-all" aria-label="Select all"${inc.length === rows.length ? ' checked' : ''}></th><th>Date</th><th>Bank description</th><th class="num">Money out</th><th class="num">Money in</th><th class="num hide-sm">Balance</th><th></th><th></th></tr></thead>
+      <tbody>${rows.map(r => `<tr class="${r.include ? '' : 'off'}">
+        <td><input type="checkbox" data-imp-inc="${r.key}"${r.include ? ' checked' : ''} aria-label="Include"></td>
+        <td class="nowrap">${shortDate(r.date)}</td>
+        <td class="wrap-text">${esc(r.text || '—')}${imp.files.length > 1 ? `<div class="meta">${esc(r.file)}</div>` : ''}</td>
+        <td class="num">${r.amount < 0 ? money(-r.amount) : ''}</td>
+        <td class="num in">${r.amount > 0 ? money(r.amount) : ''}</td>
+        <td class="num hide-sm">${r.balance != null ? signedMoney(r.balance) : ''}</td>
+        <td>${STATUS[r.status] || ''}</td>
+        <td><button class="btn small" data-imp-flip="${r.key}" title="Swap money in / out">⇄</button></td>
+      </tr>`).join('')}</tbody>`
+      : `<tbody><tr><td class="empty">No transactions found. ${imp.files.some(f => f.kind === 'table') ? 'Check the column choices above, especially Date and the amount columns.' : 'If this is a scanned (image) PDF, download the CSV or Excel version of the statement from your bank instead.'}</td></tr></tbody>`;
+  }
+
+  $('#imp-table').addEventListener('change', e => {
+    if (e.target.id === 'imp-all') {
+      imp.rows.forEach(r => imp.overrides.set(r.key, { ...imp.overrides.get(r.key), include: e.target.checked }));
+    } else if (e.target.dataset.impInc) {
+      const k = e.target.dataset.impInc;
+      imp.overrides.set(k, { ...imp.overrides.get(k), include: e.target.checked });
+    } else return;
+    buildPreview();
+  });
+  $('#imp-table').addEventListener('click', e => {
+    const b = e.target.closest('[data-imp-flip]');
+    if (!b) return;
+    const o = imp.overrides.get(b.dataset.impFlip) || {};
+    imp.overrides.set(b.dataset.impFlip, { ...o, flip: !o.flip });
+    buildPreview();
+  });
+  $('#imp-set-balance').addEventListener('change', () => { $('#imp-balance-wrap').dataset.touched = '1'; });
+
+  function resetImport() {
+    imp.files = []; imp.rows = []; imp.overrides = new Map(); imp.closing = null;
+    delete $('#imp-balance-wrap').dataset.touched;
+    $('#imp-mapping').hidden = $('#imp-preview').hidden = true;
+    $('#imp-status').textContent = '';
+  }
+  $('#imp-cancel').addEventListener('click', resetImport);
+
+  $('#imp-confirm').addEventListener('click', () => {
+    const rows = imp.rows.filter(r => r.include);
+    if (!rows.length) return;
+    let accId = impAccount.value;
+    if (accId === '__new') {
+      const name = $('#imp-new-name').value.trim();
+      if (!name) { $('#imp-new-name').focus(); return toast('Enter a name for the new account.'); }
+      if (Store.accounts.some(a => a.name.toLowerCase() === name.toLowerCase())) return toast('An account with that name already exists.');
+      accId = Store.upsertAccount({ id: Store.uid(), name, type: 'bank' }).id;
+      $('#imp-new-name').value = '';
+    }
+    Store.setSetting('lastImportAccountId', accId);
+    const added = Store.addImported(rows.map(r => ({
+      date: r.date, type: r.amount > 0 ? 'income' : 'expense', amount: Math.abs(r.amount), accountId: accId,
+      category: Store.UNCATEGORIZED, description: '', method: '', statementText: r.text || NO_TEXT, needsReview: true,
+    })));
+    if (imp.closing && $('#imp-set-balance').checked) {
+      const acc = Store.accountById(accId);
+      const movement = balanceOf({ ...acc, openingBalance: 0 }, imp.closing.date);
+      Store.upsertAccount({ ...acc, openingBalance: Math.round((imp.closing.balance - movement) * 100) / 100 });
+    }
+    resetImport();
+    fillImportAccounts();
+    syncFormType();
+    toast(`Imported ${plural(added.length, 'transaction')} into ${accountName(accId)}`);
+    render();
+    $('#review').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  // ---------- Review imported transactions ----------
+  const reviewList = $('#review-list');
+  const needsReview = () => Store.transactions.filter(t => t.needsReview);
+
+  function updateReviewIndicators() {
+    const n = needsReview().length;
+    $('#review-badge').hidden = !n;
+    $('#review-badge').textContent = n;
+    $('#review-banner').hidden = !n || !['dashboard', 'transactions'].includes(currentView);
+    $('#review-banner-text').textContent = `${plural(n, 'imported transaction')} ${n === 1 ? 'needs' : 'need'} a description and category.`;
+  }
+
+  function categoryOptions(type, selected = '') {
+    return `<option value="">Choose category…</option>` + (Store.categories[type] || []).map(c => `<option${c === selected ? ' selected' : ''}>${esc(c)}</option>`).join('');
+  }
+
+  function renderReview() {
+    const accSel = $('#review-account');
+    const prev = accSel.value;
+    const all = needsReview();
+    const accIds = [...new Set(all.map(t => t.accountId).filter(Boolean))];
+    accSel.innerHTML = '<option value="">All accounts</option>' + accIds.map(id => `<option value="${id}">${esc(accountName(id))}</option>`).join('');
+    accSel.value = accIds.includes(prev) ? prev : '';
+    const items = sortedTx(all.filter(t => !accSel.value || t.accountId === accSel.value));
+    $('#review-tools').hidden = !all.length;
+    $('#review-count').textContent = all.length ? `${all.length} to go` : '';
+    $('#review-bulk-cat').innerHTML = '<option value="">Choose…</option>' +
+      `<optgroup label="Money out">${Store.categories.expense.map(c => `<option value="expense|${esc(c)}">${esc(c)}</option>`).join('')}</optgroup>` +
+      `<optgroup label="Money in">${Store.categories.income.map(c => `<option value="income|${esc(c)}">${esc(c)}</option>`).join('')}</optgroup>`;
+    if (!all.length) {
+      reviewList.innerHTML = '<div class="empty">Nothing to review. Imported transactions will appear here so you can add descriptions and categories.</div>';
+      return;
+    }
+    reviewList.innerHTML = items.map(t => {
+      const out = t.type === 'expense';
+      const others = Store.accounts.filter(a => a.id !== t.accountId && !a.archived);
+      return `<div class="rv" data-id="${t.id}">
+        <div class="rv-top">
+          <input type="checkbox" class="rv-check" aria-label="Select">
+          <span class="rv-date">${shortDate(t.date)}</span>
+          <span class="tag">${esc(accountName(t.accountId))}</span>
+          <span class="rv-text" title="${esc(t.statementText || '')}">${esc(t.statementText || '')}</span>
+          <span class="amt ${t.type}">${out ? '−' : '+'}${money(t.amount)}</span>
+        </div>
+        <div class="rv-fields">
+          <select class="rv-type" aria-label="Type">
+            <option value="${t.type}">${out ? 'Expense' : 'Income'}</option>
+            ${others.length ? `<option value="transfer">${out ? 'Transfer to my account' : 'Transfer from my account'}</option>` : ''}
+          </select>
+          <input type="text" class="rv-desc" maxlength="120" placeholder="Description" aria-label="Description" value="${esc(t.description || '')}">
+          <select class="rv-cat" aria-label="Category">${categoryOptions(t.type)}</select>
+          <select class="rv-other" aria-label="${out ? 'To account' : 'From account'}" hidden>
+            <option value="">${out ? 'To account…' : 'From account…'}</option>
+            ${others.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}
+          </select>
+          <button class="btn small primary rv-save">Save</button>
+          <button class="btn small rv-del" title="Delete this transaction">Delete</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  $('#review-account').addEventListener('change', renderReview);
+  reviewList.addEventListener('change', e => {
+    if (!e.target.matches('.rv-type')) return;
+    const row = e.target.closest('.rv'), transfer = e.target.value === 'transfer';
+    $('.rv-cat', row).hidden = transfer;
+    $('.rv-other', row).hidden = !transfer;
+  });
+  reviewList.addEventListener('click', e => {
+    const row = e.target.closest('.rv');
+    if (!row) return;
+    if (e.target.closest('.rv-save')) {
+      const msg = saveReviewRow(row, true);
+      if (msg) toast(msg);
+    }
+    if (e.target.closest('.rv-del')) {
+      const t = Store.transactions.find(x => x.id === row.dataset.id);
+      if (t && confirm(`Delete this ${money(t.amount)} transaction from ${shortDate(t.date)}?`)) {
+        Store.deleteTx(t.id);
+        removeReviewRow(row);
+      }
+    }
+  });
+  reviewList.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && e.target.matches('.rv-desc')) {
+      e.preventDefault();
+      const row = e.target.closest('.rv');
+      const next = row.nextElementSibling;
+      const msg = saveReviewRow(row, true);
+      if (msg) toast(msg);
+      else $('.rv-desc', next || document.body)?.focus();
+    }
+  });
+
+  function removeReviewRow(row) {
+    row.remove();
+    if (!$('.rv', reviewList)) renderReview();
+    else $('#review-count').textContent = `${needsReview().length} to go`;
+    updateReviewIndicators();
+  }
+
+  /** Saves one review row. Returns an error message, or '' on success. */
+  function saveReviewRow(row, interactive) {
+    const t = Store.transactions.find(x => x.id === row.dataset.id);
+    if (!t) { row.remove(); return ''; }
+    const type = $('.rv-type', row).value;
+    const description = $('.rv-desc', row).value.trim();
+    if (type === 'transfer') {
+      const other = $('.rv-other', row).value;
+      if (!other) return interactive ? 'Choose the other account for this transfer.' : 'skip';
+      const out = t.type === 'expense';
+      // If the other account's statement has the matching entry, merge it instead of double counting.
+      const match = Store.transactions.find(x => x.id !== t.id && x.type !== 'transfer' && x.accountId === other &&
+        x.amount === t.amount && x.type === (out ? 'income' : 'expense') &&
+        Math.abs(parseDate(x.date) - parseDate(t.date)) <= 4 * 86400000);
+      if (match) Store.deleteTx(match.id);
+      Store.upsertTx({
+        ...t, type: 'transfer', accountId: out ? t.accountId : other, toAccountId: out ? other : t.accountId,
+        category: 'Transfer', description, needsReview: false,
+        statementAccountId: t.accountId, linkedText: match?.statementText, linkedDate: match?.date,
+      });
+      if (match) {
+        const el = $(`.rv[data-id="${match.id}"]`, reviewList);
+        if (el) el.remove();
+        if (interactive) toast(`Saved, and matched with the same amount in ${accountName(other)}`);
+      }
+    } else {
+      const category = $('.rv-cat', row).value;
+      if (!category) return interactive ? 'Choose a category first.' : 'skip';
+      Store.upsertTx({ ...t, category, description, needsReview: false });
+    }
+    removeReviewRow(row);
+    return '';
+  }
+
+  $('#review-save-all').addEventListener('click', () => {
+    let saved = 0, skipped = 0;
+    $$('.rv', reviewList).forEach(row => {
+      if (!row.isConnected) return;
+      if (saveReviewRow(row, false)) skipped++; else saved++;
+    });
+    toast(saved ? `Saved ${plural(saved, 'transaction')}${skipped ? ` · ${skipped} still need a category` : ''}` : 'Choose a category on at least one row first.');
+    render();
+  });
+
+  $('#review-bulk-apply').addEventListener('click', () => {
+    const v = $('#review-bulk-cat').value;
+    if (!v) return toast('Choose a category to apply.');
+    const [type, cat] = [v.slice(0, v.indexOf('|')), v.slice(v.indexOf('|') + 1)];
+    let applied = 0, wrong = 0;
+    $$('.rv', reviewList).filter(r => $('.rv-check', r).checked).forEach(row => {
+      const t = Store.transactions.find(x => x.id === row.dataset.id);
+      if (!t || t.type !== type) { wrong++; return; }
+      $('.rv-type', row).value = t.type;
+      $('.rv-cat', row).hidden = false; $('.rv-other', row).hidden = true;
+      $('.rv-cat', row).value = cat;
+      $('.rv-check', row).checked = false;
+      applied++;
+    });
+    toast(applied ? `Category set on ${plural(applied, 'row')}${wrong ? ` · ${wrong} skipped (wrong direction)` : ''}. Click "Save all completed" when ready.`
+      : 'Tick some rows first (money-out categories only apply to money-out rows).');
+  });
+
+  function renderImport() {
+    fillImportAccounts();
+    renderReview();
+  }
+
   // ---------- Settings ----------
   function renderSettings() {
     ['expense', 'income'].forEach(type => {
@@ -722,7 +1203,7 @@
   });
 
   // ---------- Import / export ----------
-  const CSV_COLS = ['date', 'type', 'amount', 'account', 'to_account', 'category', 'description', 'method', 'notes'];
+  const CSV_COLS = ['date', 'type', 'amount', 'account', 'to_account', 'category', 'description', 'method', 'notes', 'statement_text'];
   const csvCell = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
 
   function download(name, content, type) {
@@ -735,7 +1216,7 @@
 
   $('#export-csv').addEventListener('click', () => {
     const rows = [...Store.transactions].sort((a, b) => a.date.localeCompare(b.date));
-    const named = t => ({ ...t, account: t.accountId ? accountName(t.accountId) : '', to_account: t.toAccountId ? accountName(t.toAccountId) : '' });
+    const named = t => ({ ...t, statement_text: t.statementText || '', account: t.accountId ? accountName(t.accountId) : '', to_account: t.toAccountId ? accountName(t.toAccountId) : '' });
     const csv = [CSV_COLS.join(',')].concat(rows.map(named).map(t => CSV_COLS.map(c => csvCell(t[c] ?? '')).join(','))).join('\n');
     download(`atlas-money-${today()}.csv`, csv, 'text/csv');
   });
@@ -782,6 +1263,7 @@
         const added = Store.mergeTransactions(rows.map(r => ({
           ...r,
           accountId: Store.ensureAccount(r.account),
+          statementText: r.statement_text,
           toAccountId: Store.ensureAccount(r.to_account),
         })));
         toast(`Imported ${added} transaction${added === 1 ? '' : 's'}`);
@@ -853,6 +1335,8 @@
     if (currentView === 'transactions') renderTransactions();
     if (currentView === 'reports') renderReports();
     if (currentView === 'accounts') renderAccounts();
+    if (currentView === 'import') renderImport();
+    updateReviewIndicators();
     if (currentView === 'settings') renderSettings();
   }
 
