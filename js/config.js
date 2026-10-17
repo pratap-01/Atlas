@@ -2,6 +2,6 @@
    allows what the database's row-level security policies allow (each user can reach only
    their own encrypted vault). See README → "Cloud storage setup". */
 window.ATLAS_CONFIG = {
-  supabaseUrl: '',      // e.g. 'https://abcdefghijklmnop.supabase.co'
-  supabaseAnonKey: '',  // Project Settings → API Keys → anon / publishable key
+  supabaseUrl: 'https://ukogfqlmxurcydlcslnc.supabase.co',
+  supabaseAnonKey: 'sb_publishable_RxgiWiCxPOasGLRWd99rhQ_cZ14kBOw', // publishable key (safe to publish; never the secret key)
 };
